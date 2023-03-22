@@ -2,6 +2,6 @@ defmodule SignalTest do
   use ExUnit.Case
   doctest Signal
   doctest Future
-  doctest Reactive
+  doctest Signal.Reactive
   doctest Event
 end
