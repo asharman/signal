@@ -1,4 +1,4 @@
-defmodule BoundedTime do
+defmodule Signal.BoundedTime do
   @opaque t() :: :lower_bound | number() | :upper_bound
   defguard is_upper(value) when value === :upper_bound
 

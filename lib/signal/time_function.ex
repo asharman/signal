@@ -1,4 +1,4 @@
-defmodule TimeFunction do
+defmodule Signal.TimeFunction do
   @moduledoc """
   TimeFunction a = (T -> a)
   TimeFunction (TimeFunction a) = T1 -> T2 -> a

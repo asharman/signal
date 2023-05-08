@@ -1,4 +1,6 @@
 defmodule Signal.Reactive do
+  alias Signal.BoundedTime
+
   @typep a :: term()
   @typep b :: term()
 

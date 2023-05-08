@@ -4,6 +4,7 @@ defmodule Signal do
   """
 
   alias Signal.Reactive
+  alias Signal.TimeFunction
 
   def sample(signal, t), do: at(signal).(t)
 
