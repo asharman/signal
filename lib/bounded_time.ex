@@ -1,5 +1,6 @@
 defmodule BoundedTime do
   @opaque t() :: :lower_bound | number() | :upper_bound
+  defguard is_upper(value) when value === :upper_bound
 
   @spec empty() :: t()
   def empty(), do: :lower_bound

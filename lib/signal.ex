@@ -25,8 +25,6 @@ defmodule Signal do
     end)
   end
 
-  def event(signal), do: Reactive.event(signal) |> Event.map(&pure/1)
-
   defp recursive_sample(f, rate, s, sample_time, acc) do
     if sample_time <= s do
       [{f.(s), s} | acc]
@@ -39,7 +37,7 @@ defmodule Signal do
 
   def switcher(s, e), do: Reactive.switcher(s, e)
 
-  def time(), do: Reactive.pure({:function, fn t -> t end})
+  def time(), do: Reactive.of({:function, fn t -> t end})
 
   @doc """
   map : Signal a -> (a -> b) -> Signal b
@@ -59,7 +57,7 @@ defmodule Signal do
   iex> Signal.pure(5) |> Signal.sample(5000)
   5
   """
-  def pure(a), do: Reactive.pure(TimeFunction.pure(a))
+  def of(a), do: Reactive.of(TimeFunction.pure(a))
 
   @doc """
   apply : Signal (a -> b) -> Signal a -> Signal b
@@ -78,12 +76,12 @@ defmodule Signal do
   """
   def ap(f, a),
     do:
-      Reactive.pure(fn function -> fn value -> TimeFunction.apply(function, value) end end)
+      Reactive.of(fn function -> fn value -> TimeFunction.apply(function, value) end end)
       |> Reactive.ap(f)
       |> Reactive.ap(a)
 
   def combine(f, signals) when is_list(signals),
-    do: Enum.reduce(signals, pure(curry(f)), &ap(&2, &1))
+    do: Enum.reduce(signals, of(curry(f)), &ap(&2, &1))
 
   defp curry(fun) do
     {_, arity} = :erlang.fun_info(fun, :arity)

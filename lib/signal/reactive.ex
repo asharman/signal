@@ -1,25 +1,31 @@
 defmodule Signal.Reactive do
-  @moduledoc """
-  type Reactive a
-    = Stepper a (Event a)
+  @typep a :: term()
+  @typep b :: term()
 
-  # Observation
-  at : Reactive a -> (Time -> a)
-  within : Reactive a -> [{a, Time, Time}]
-  """
+  @opaque occurance(a) :: {BoundedTime.t(), a}
+  @opaque reactive(a) :: %__MODULE__{value: a, next_value: Enumerable.t()}
 
-  # type t(a) :: {:stepper, a, [Future.t(a)]}
-  def at({:stepper, initial_value, event}),
-    do: fn t -> List.last(Event.before(event, t), initial_value) end
+  defstruct [:value, :next_value]
 
-  def at({:switcher, r, e}),
-    do: fn t -> Event.before(e, t) |> List.last(r) |> at() |> apply([t]) end
+  @spec initial_value(reactive(a)) :: a
+  def initial_value(%__MODULE__{value: v}), do: v
 
-  def occurances({:stepper, initial_value, events}),
-    do: [{:initial, initial_value} | Event.occurances(events)]
+  def at(%__MODULE__{value: a, next_value: v}),
+    do: fn t ->
+      Enum.reduce_while(v, a, fn {ts, value}, acc ->
+        if BoundedTime.compare(t, ts) != :lt do
+          {:cont, value}
+        else
+          {:halt, acc}
+        end
+      end)
+    end
 
-  def within({:stepper, v, e}, time_start, time_end) do
-    Event.occurances(e)
+  @spec occurances(reactive(a)) :: Enumerable.t()
+  def occurances(%__MODULE__{next_value: values}), do: values
+
+  def within(%__MODULE__{value: v, next_value: futures}, time_start, time_end) do
+    futures
     |> Enum.filter(fn {t, _} -> BoundedTime.compare(time_end, t) == :gt end)
     |> Enum.reduce([{v, time_start, time_end}], fn {t, a}, [{prev_a, prev_t_start, _} | rest] ->
       cond do
@@ -36,120 +42,60 @@ defmodule Signal.Reactive do
     |> Enum.reverse()
   end
 
-  def initial_value({:stepper, value, _}), do: value
-  def event({:stepper, _, event}), do: event
-  def event({:switcher, _, event}), do: Future.map(event, &join/1)
+  @spec of(a) :: reactive(a)
+  def of(a), do: %__MODULE__{value: a, next_value: []}
 
-  @doc """
-  stepper : a -> Event a -> Reactive a
+  @spec stepper(a, [occurance(a)]) :: reactive(a)
+  def stepper(initial_value, event), do: %__MODULE__{value: initial_value, next_value: event}
 
-  ## Examples
-  iex> Signal.Reactive.pure(5)
-  ...> |> Signal.Reactive.at()
-  ...> |> then(fn f -> f.(15000000) end)
-  5
-
-  iex> Signal.Reactive.stepper(5, Event.from_list([{1000, 7}, {3000, 9}]))
-  ...> |> Signal.Reactive.at()
-  ...> |> then(fn f -> f.(2000) end)
-  7
-
-  iex> Signal.Reactive.stepper(5, Event.from_list([{1000, 7}, {3000, 9}]))
-  ...> |> Signal.Reactive.at()
-  ...> |> then(fn f -> f.(4000) end)
-  9
-  """
-  def stepper(initial_value, events), do: {:stepper, initial_value, events}
-  # def switcher(r, e), do: join(stepper(r, e)) |> IO.inspect(label: "POST JOIN")
+  @spec switcher(reactive(a), [occurance(reactive(a))]) :: reactive(a)
   def switcher(r, e), do: join(stepper(r, e))
 
-  @doc """
-  map : Reactive a -> (a -> b) -> Reactive b
+  @spec map(reactive(a), (a -> b)) :: reactive(b)
+  def map(%__MODULE__{value: a, next_value: e}, f),
+    do: %__MODULE__{value: f.(a), next_value: Stream.map(e, fn {t, v} -> {t, f.(v)} end)}
 
-  ## Examples
-  iex> Signal.Reactive.pure(5)
-  ...> |> Signal.Reactive.map(fn x -> x + 1 end)
-  ...> |> Signal.Reactive.at()
-  ...> |> then(fn f -> f.(15000000) end)
-  6
+  @spec ap(reactive((a -> b)), reactive(a)) :: reactive(b)
+  def ap(%__MODULE__{} = reactive_f, %__MODULE__{} = reactive_a) do
+    %__MODULE__{
+      value: reactive_f.value.(reactive_a.value),
+      next_value:
+        Stream.unfold(
+          %{
+            functions: reactive_f.next_value,
+            values: reactive_a.next_value,
+            cached_function: reactive_f.value,
+            cached_value: reactive_a.value
+          },
+          fn
+            %{functions: fs, values: as, cached_function: f, cached_value: a} = acc ->
+              next_f = Enum.at(fs, 0)
+              next_a = Enum.at(as, 0)
 
-  iex> Signal.Reactive.stepper(5, Event.from_list([{1000, 7}, {3000, 9}]))
-  ...> |> Signal.Reactive.map(fn x -> x + 1 end)
-  ...> |> Signal.Reactive.at()
-  ...> |> then(fn f -> f.(2000) end)
-  8
+              case {next_f, next_a} do
+                {nil, nil} ->
+                  nil
 
-  iex> Signal.Reactive.stepper(5, Event.from_list([{1000, 7}, {3000, 9}]))
-  ...> |> Signal.Reactive.map(fn x -> x + 1 end)
-  ...> |> Signal.Reactive.at()
-  ...> |> then(fn f -> f.(4000) end)
-  10
-  """
-  def map(:bottom, _f), do: :bottom
+                {{t, next_f}, nil} ->
+                  {{t, next_f.(a)}, %{acc | functions: Enum.drop(fs, 1), cached_function: next_f}}
 
-  def map({:stepper, initial_value, events}, f),
-    do: {:stepper, f.(initial_value), Event.map(events, f)}
+                {nil, {t, next_a}} ->
+                  {{t, f.(next_a)}, %{acc | values: Enum.drop(as, 1), cached_value: next_a}}
 
-  @doc """
-  pure : a -> Reactive a
-
-  apply : Reactive (a -> b) -> Reactive a -> Reactive b
-
-  ## Examples
-  iex> Signal.Reactive.pure(5) |> Signal.Reactive.at() |> then(fn f -> f.(5000) end)
-  5
-
-  iex> Signal.Reactive.pure(fn x -> x + 1 end)
-  ...> |> Signal.Reactive.ap(Signal.Reactive.pure(5))
-  ...> |> Signal.Reactive.at()
-  ...> |> then(fn f -> f.(4000) end)
-  6
-
-  iex> Signal.Reactive.pure(fn x -> fn y -> x + y end end)
-  ...> |> Signal.Reactive.ap(Signal.Reactive.pure(5))
-  ...> |> Signal.Reactive.ap(Signal.Reactive.pure(5))
-  ...> |> Signal.Reactive.at()
-  ...> |> then(fn f -> f.(5000) end)
-  10
-
-  iex> Signal.Reactive.stepper(fn x -> x end, Event.from_list([{5000, fn x -> x + 1 end}]))
-  ...> |> Signal.Reactive.ap(Signal.Reactive.pure(5))
-  ...> |> Signal.Reactive.at()
-  ...> |> then(fn f -> f.(4000) end)
-  5
-
-  iex> Signal.Reactive.stepper(fn x -> x end, Event.from_list([{5000, fn x -> x + 1 end}]))
-  ...> |> Signal.Reactive.ap(Signal.Reactive.pure(5))
-  ...> |> Signal.Reactive.at()
-  ...> |> then(fn f -> f.(6000) end)
-  6
-
-  iex> Signal.Reactive.stepper(fn x -> x end, Event.from_list([{5000, fn x -> x + 1 end}]))
-  ...> |> Signal.Reactive.ap(Signal.Reactive.stepper(5, Event.from_list([{5500, 6}])))
-  ...> |> Signal.Reactive.at()
-  ...> |> then(fn f -> f.(6000) end)
-  7
-
-  iex> Signal.Reactive.stepper(fn x -> x end, Event.from_list([{5000, fn x -> x + 1 end}]))
-  ...> |> Signal.Reactive.ap(Signal.Reactive.stepper(5, Event.from_list([{7000, 6}])))
-  ...> |> Signal.Reactive.at()
-  ...> |> then(fn f -> f.(6000) end)
-  6
-  """
-  def pure(a), do: {:stepper, a, Event.empty()}
-
-  def ap({:stepper, function, {:upper_bound, _}}, a), do: map(a, function)
-  def ap(function, {:stepper, a, {:upper_bound, _}}), do: map(function, fn f -> f.(a) end)
-
-  def ap({:stepper, initial_f, event_f} = f, {:stepper, initial_a, event_a} = a) do
-    {:stepper, initial_f.(initial_a),
-     Future.append(
-       Future.map(event_f, fn new_function -> ap(new_function, a) end),
-       Future.map(event_a, fn new_value -> ap(f, new_value) end)
-     )}
+                {{t1, next_f}, {t2, next_a}} ->
+                  if BoundedTime.compare(t1, t2) === :gt do
+                    {{t2, f.(next_a)}, %{acc | values: Enum.drop(as, 1), cached_value: next_a}}
+                  else
+                    {{t1, next_f.(a)},
+                     %{acc | functions: Enum.drop(fs, 1), cached_function: next_f}}
+                  end
+              end
+          end
+        )
+    }
   end
 
-  def combine(f, rs) when is_list(rs), do: Enum.reduce(rs, pure(curry(f)), &ap(&2, &1))
+  def combine(f, rs) when is_list(rs), do: Enum.reduce(rs, of(curry(f)), &ap(&2, &1))
 
   defp curry(fun) do
     {_, arity} = :erlang.fun_info(fun, :arity)
@@ -162,55 +108,59 @@ defmodule Signal.Reactive do
     fn arg -> curry(fun, arity - 1, [arg | arguments]) end
   end
 
-  @doc """
-  bind : Reactive a -> (a -> Reactive b) -> Reactive b
+  def join(%__MODULE__{value: initial_reactive, next_value: next_reactives}) do
+    %__MODULE__{
+      value: initial_reactive.value,
+      next_value:
+        Stream.unfold(
+          %{
+            current_time: BoundedTime.empty(),
+            current: initial_reactive.next_value,
+            next_reactives: next_reactives
+          },
+          fn %{current_time: current_time, current: current, next_reactives: next} ->
+            next_current = Enum.at(current, 0)
+            next_reactive = Enum.at(next, 0)
 
-  ## Examples
-  iex> Signal.Reactive.pure(5)
-  ...> |> Signal.Reactive.bind(fn x -> Signal.Reactive.pure(x + 2) end)
-  ...> |> Signal.Reactive.at()
-  ...> |> then(fn f -> f.(7000) end)
-  7
+            case {next_current, next_reactive} do
+              {nil, nil} ->
+                nil
 
-  iex> Signal.Reactive.pure(Signal.Reactive.pure(5))
-  ...> |> Signal.Reactive.join()
-  ...> |> Signal.Reactive.at()
-  ...> |> then(fn f -> f.(7000) end)
-  5
-  """
-  def bind(a, f) do
-    # IO.inspect(a, label: "BIND")
-    joinR(map(a, f))
-  end
+              {{t, v}, nil} ->
+                {{BoundedTime.max(t, current_time), v},
+                 %{
+                   current_time: BoundedTime.max(t, current_time),
+                   current: Enum.drop(current, 1),
+                   next_reactives: next
+                 }}
 
-  def join(rr), do: bind(rr, fn x -> x end)
+              {nil, {t, next_reactive}} ->
+                {{BoundedTime.max(t, current_time), next_reactive.value},
+                 %{
+                   current_time: BoundedTime.max(t, current_time),
+                   current: next_reactive.next_value,
+                   next_reactives: Enum.drop(next, 1)
+                 }}
 
-  defp joinR({:stepper, r, {:upper_bound, _}}), do: r
-  # def join({:stepper, {:stepper, a, {:upper_bound, _}}, e}), do: {:stepper, a, Future.join(e)}
-
-  defp joinR({:stepper, {:stepper, a, inner_e}, outer_e} = rr) do
-    # IO.inspect(rr, label: "NESTED REACTIVE")
-
-    future =
-      Future.append(
-        Future.map(inner_e, fn new_value ->
-          if new_value == :bottom do
-            new_value
-          else
-            # IO.inspect(inner_e, label: "INNER EVENT")
-            # IO.inspect(new_value, label: "NEW INNER VALUE")
-            switcher(new_value, outer_e)
+              {{t1, v}, {t2, next_reactive}} ->
+                if BoundedTime.compare(t1, t2) === :gt do
+                  {{BoundedTime.max(t2, current_time), next_reactive.value},
+                   %{
+                     current_time: BoundedTime.max(t2, current_time),
+                     current: next_reactive.next_value,
+                     next_reactives: Enum.drop(next, 1)
+                   }}
+                else
+                  {{BoundedTime.max(t1, current_time), v},
+                   %{
+                     current_time: BoundedTime.max(t1, current_time),
+                     current: Enum.drop(current, 1),
+                     next_reactives: next
+                   }}
+                end
+            end
           end
-        end),
-        Future.map(outer_e, fn next_reactive ->
-          # IO.inspect(next_reactive, label: "NEXT REACTIVE VALUE SECOND BRANCH")
-          join(next_reactive)
-          # |> IO.inspect(label: "AFTER INNER JOIN IN SECOND BRANCH")
-        end)
-      )
-
-    # |> IO.inspect(label: "FUTURE APPEND")
-
-    {:stepper, a, future}
+        )
+    }
   end
 end

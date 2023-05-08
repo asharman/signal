@@ -1,4 +1,6 @@
 defmodule Signal.Future do
+  import BoundedTime
+
   @typep a :: term()
   @typep b :: term()
 
@@ -14,9 +16,13 @@ defmodule Signal.Future do
   def map(future, f),
     do: %__MODULE__{
       value: fn ->
-        {t, a} = force(future)
+        case force(future) do
+          {t, _} = time_value when is_upper(t) ->
+            time_value
 
-        {t, f.(a)}
+          {t, a} ->
+            {t, f.(a)}
+        end
       end
     }
 
@@ -55,10 +61,11 @@ defmodule Signal.Future do
   def append(future_a, future_b),
     do: %__MODULE__{
       value: fn ->
-        {t1, a} = force(future_a)
-        {t2, b} = force(future_b)
+        {t1, a} = force(future_a) |> IO.inspect(label: "FUTURE A")
+        {t2, b} = force(future_b) |> IO.inspect(label: "FUTURE B")
 
         {BoundedTime.min(t1, t2), if(BoundedTime.compare(t1, t2) == :gt, do: b, else: a)}
+        |> IO.inspect(label: "RETURNED FUTURE")
       end
     }
 

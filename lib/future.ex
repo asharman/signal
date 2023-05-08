@@ -4,6 +4,8 @@ defmodule Future do
   force :: Future a -> (BoundedTime, a)
   """
 
+  @type time_value(a) :: {BoundedTime.t(), a}
+
   @doc """
   force : Future a -> (BoundedTime, a)
   """
@@ -16,6 +18,7 @@ defmodule Future do
   iex> Future.pure(5) |> Future.map(fn x -> x + 1 end) |> Future.force()
   {:lower_bound, 6}
   """
+  def map({:upper_bound, _}, _), do: {:upper_bound, :bottom}
   def map({t, a}, f), do: {t, f.(a)}
 
   @doc """
@@ -45,6 +48,8 @@ defmodule Future do
   iex> Future.pure(5) |> Future.bind(fn x -> {1000, x + 2} end) |> Future.force()
   {1000, 7}
   """
+  def bind({:upper_bound, _}, _), do: {:upper_bound, :bottom}
+
   def bind({t1, a}, f) do
     {t2, b} = f.(a)
     {BoundedTime.max(t1, t2), b}
